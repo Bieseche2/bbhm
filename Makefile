@@ -20,6 +20,7 @@ SRCS   := $(wildcard source/*.c)
 OFILES := $(SRCS:.c=.o)
 
 CFLAGS += -O2 -Wall -mcpu=cell -I$(PORTLIBS)/include -I$(PORTLIBS)/include/SDL2
+CFLAGS += -I$(PSL1GHT)/ppu/include -I$(PS3DEV)/ppu/include
 
 # Se o link falhar, ajuste a ordem/lista aqui (o log do Actions mostra o que falta)
 LIBS := -L$(PORTLIBS)/lib -lSDL2_ttf -lfreetype -lSDL2 -lm \
