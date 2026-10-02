@@ -28,13 +28,13 @@ LIBS := -L$(PORTLIBS)/lib -lSDL2_ttf -lfreetype -lSDL2 -lm \
 all: $(TARGET).self
 
 $(TARGET).elf: $(OFILES)
-$(CC) $(OFILES) $(LIBS) -o $@
+	$(CC) $(OFILES) $(LIBS) -o $@
 
 %.o: %.c
-$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) -c $< -o $@
 
 clean:
-rm -f source/*.o $(TARGET).elf $(TARGET).self *.pkg
-rm -rf build
+	rm -f source/*.o $(TARGET).elf $(TARGET).self *.pkg
+	rm -rf build
 
 .PHONY: all clean
