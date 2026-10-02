@@ -89,7 +89,7 @@ int main(int argc, char *argv[])
     SDL_RendererInfo info;
     SDL_Event ev;
     TTF_Font *font = NULL;
-    PadData pd;
+    padData pd;
     int cur[NBTN], prev[NBTN];
     char last[128] = "nenhum input ainda";
     char buf[200], held[200];
