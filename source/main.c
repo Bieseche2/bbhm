@@ -1,10 +1,12 @@
 /* BBhM - Bieseche Bullshit Hen manager
- * Passo 1: esqueleto SDL2 (tela de teste estilo GNOME 2 + cursor + log) */
+ * v0.0.2: input pelo pad nativo do PSL1GHT (io/pad.h), textos em cache,
+ *         saida limpa com Start+Select, log mais detalhado */
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
 #include <SDL.h>
 #include <SDL_ttf.h>
+#include <io/pad.h>
 
 #define APP_DIR   "/dev_hdd0/game/BBHM00001/USRDIR"
 #define FONT_PATH APP_DIR "/font.ttf"
@@ -33,25 +35,39 @@ static void fill(SDL_Renderer *r, int x, int y, int w, int h,
     SDL_RenderFillRect(r, &rc);
 }
 
-static void text(SDL_Renderer *r, TTF_Font *f, const char *s,
-                 int x, int y, Uint8 R, Uint8 G, Uint8 B)
+/* texto em cache: so re-renderiza quando a string muda */
+typedef struct {
+    char s[200];
+    SDL_Texture *tx;
+    int w, h;
+} label_t;
+
+static void label_set(SDL_Renderer *r, TTF_Font *f, label_t *l, const char *s,
+                      Uint8 R, Uint8 G, Uint8 B)
 {
     SDL_Color c;
     SDL_Surface *su;
-    SDL_Texture *tx;
-    SDL_Rect dst;
 
-    if (!f || !s || !*s) return;
+    if (!f || !s) return;
+    if (l->tx && strcmp(l->s, s) == 0) return;
+    if (l->tx) { SDL_DestroyTexture(l->tx); l->tx = NULL; }
+    strncpy(l->s, s, sizeof l->s - 1);
+    l->s[sizeof l->s - 1] = 0;
     c.r = R; c.g = G; c.b = B; c.a = 255;
-    su = TTF_RenderUTF8_Blended(f, s, c);
+    su = TTF_RenderUTF8_Blended(f, l->s, c);
     if (!su) return;
-    tx = SDL_CreateTextureFromSurface(r, su);
-    dst.x = x; dst.y = y; dst.w = su->w; dst.h = su->h;
-    if (tx) {
-        SDL_RenderCopy(r, tx, NULL, &dst);
-        SDL_DestroyTexture(tx);
-    }
+    l->tx = SDL_CreateTextureFromSurface(r, su);
+    l->w = su->w;
+    l->h = su->h;
     SDL_FreeSurface(su);
+}
+
+static void label_draw(SDL_Renderer *r, label_t *l, int x, int y)
+{
+    SDL_Rect dst;
+    if (!l->tx) return;
+    dst.x = x; dst.y = y; dst.w = l->w; dst.h = l->h;
+    SDL_RenderCopy(r, l->tx, NULL, &dst);
 }
 
 static void draw_cursor(SDL_Renderer *r, int x, int y)
@@ -60,24 +76,40 @@ static void draw_cursor(SDL_Renderer *r, int x, int y)
     fill(r, x + 2, y + 2, 10, 10, 255, 255, 255);
 }
 
+#define NBTN 16
+static const char *BTN_NAMES[NBTN] = {
+    "Cross", "Circle", "Square", "Triangle", "L1", "R1", "L2", "R2",
+    "L3", "R3", "Start", "Select", "Up", "Down", "Left", "Right"
+};
+
 int main(int argc, char *argv[])
 {
     SDL_Window *win;
     SDL_Renderer *ren;
     SDL_RendererInfo info;
-    SDL_Joystick *js = NULL;
     SDL_Event ev;
     TTF_Font *font = NULL;
+    PadData pd;
+    int cur[NBTN], prev[NBTN];
     char last[128] = "nenhum input ainda";
-    char buf[192];
-    const char *jsname = "nenhum";
-    int running = 1, w = 1280, h = 720, cx, cy;
+    char buf[200], held[200];
+    int running = 1, w = 1280, h = 720, cx, cy, i, pad_ok = 0, evcount = 0;
     Uint32 t0, frames = 0, fps = 0;
+    label_t l_menu, l_task, l_title, l_ver, l_rend, l_fps, l_pad, l_last,
+            l_held, l_hint;
 
     (void)argc; (void)argv;
-    bb_log("=== BBhM iniciando ===");
+    memset(&l_menu, 0, sizeof l_menu);   memset(&l_task, 0, sizeof l_task);
+    memset(&l_title, 0, sizeof l_title); memset(&l_ver, 0, sizeof l_ver);
+    memset(&l_rend, 0, sizeof l_rend);   memset(&l_fps, 0, sizeof l_fps);
+    memset(&l_pad, 0, sizeof l_pad);     memset(&l_last, 0, sizeof l_last);
+    memset(&l_held, 0, sizeof l_held);   memset(&l_hint, 0, sizeof l_hint);
+    memset(cur, 0, sizeof cur);
+    memset(prev, 0, sizeof prev);
 
-    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_JOYSTICK) != 0) {
+    bb_log("=== BBhM v0.0.2 iniciando ===");
+
+    if (SDL_Init(SDL_INIT_VIDEO) != 0) {
         bb_log("SDL_Init falhou: %s", SDL_GetError());
         return 1;
     }
@@ -109,72 +141,108 @@ int main(int argc, char *argv[])
         if (!font) bb_log("fonte nao abriu (%s): %s", FONT_PATH, TTF_GetError());
     }
 
-    bb_log("joysticks=%d", SDL_NumJoysticks());
-    if (SDL_NumJoysticks() > 0) {
-        js = SDL_JoystickOpen(0);
-        if (js) {
-            jsname = SDL_JoystickName(js) ? SDL_JoystickName(js) : "sem nome";
-            bb_log("joystick0=%s botoes=%d eixos=%d", jsname,
-                   SDL_JoystickNumButtons(js), SDL_JoystickNumAxes(js));
-        }
-    }
+    ioPadInit(7);
+    bb_log("ioPadInit ok");
 
     cx = w / 2; cy = h / 2;
     t0 = SDL_GetTicks();
+    bb_log("entrando no loop");
 
     while (running) {
         while (SDL_PollEvent(&ev)) {
+            if (evcount < 30) {
+                bb_log("evento SDL tipo=0x%x", (unsigned)ev.type);
+                evcount++;
+            }
             if (ev.type == SDL_QUIT) {
+                bb_log("SDL_QUIT recebido");
                 running = 0;
-            } else if (ev.type == SDL_JOYBUTTONDOWN) {
-                snprintf(last, sizeof last, "botao %d", ev.jbutton.button);
-                bb_log("input: %s", last);
-            } else if (ev.type == SDL_JOYAXISMOTION &&
-                       (ev.jaxis.value > 12000 || ev.jaxis.value < -12000)) {
-                snprintf(last, sizeof last, "eixo %d = %d",
-                         ev.jaxis.axis, ev.jaxis.value);
-                bb_log("input: %s", last);
             }
         }
 
-        if (js) {
-            int ax = SDL_JoystickGetAxis(js, 0);
-            int ay = SDL_JoystickGetAxis(js, 1);
-            if (ax > 4000 || ax < -4000) cx += ax / 3000;
-            if (ay > 4000 || ay < -4000) cy += ay / 3000;
+        /* pad nativo */
+        memset(&pd, 0, sizeof pd);
+        pad_ok = (ioPadGetData(0, &pd) == 0 && pd.len > 0);
+        if (pad_ok) {
+            cur[0]  = pd.BTN_CROSS;   cur[1]  = pd.BTN_CIRCLE;
+            cur[2]  = pd.BTN_SQUARE;  cur[3]  = pd.BTN_TRIANGLE;
+            cur[4]  = pd.BTN_L1;      cur[5]  = pd.BTN_R1;
+            cur[6]  = pd.BTN_L2;      cur[7]  = pd.BTN_R2;
+            cur[8]  = pd.BTN_L3;      cur[9]  = pd.BTN_R3;
+            cur[10] = pd.BTN_START;   cur[11] = pd.BTN_SELECT;
+            cur[12] = pd.BTN_UP;      cur[13] = pd.BTN_DOWN;
+            cur[14] = pd.BTN_LEFT;    cur[15] = pd.BTN_RIGHT;
+
+            held[0] = 0;
+            for (i = 0; i < NBTN; i++) {
+                if (cur[i]) {
+                    strncat(held, BTN_NAMES[i], sizeof held - strlen(held) - 2);
+                    strncat(held, " ", sizeof held - strlen(held) - 1);
+                }
+                if (cur[i] && !prev[i]) {
+                    snprintf(last, sizeof last, "botao %s", BTN_NAMES[i]);
+                    bb_log("input: %s", last);
+                }
+                prev[i] = cur[i];
+            }
+
+            {
+                int ax = (int)pd.ANA_L_H - 128;
+                int ay = (int)pd.ANA_L_V - 128;
+                if (ax > 20 || ax < -20) cx += ax / 8;
+                if (ay > 20 || ay < -20) cy += ay / 8;
+            }
+
+            if (cur[10] && cur[11]) {
+                bb_log("Start+Select: saindo");
+                running = 0;
+            }
+        } else {
+            held[0] = 0;
         }
         if (cx < 0) cx = 0;
         if (cy < 0) cy = 0;
         if (cx > w - 14) cx = w - 14;
         if (cy > h - 14) cy = h - 14;
 
+        /* textos (so re-renderizam quando mudam) */
+        label_set(ren, font, &l_menu, "Applications   Places   System", 20, 20, 20);
+        label_set(ren, font, &l_task, "BBhM", 20, 20, 20);
+        label_set(ren, font, &l_title, "BBhM - teste do esqueleto", 255, 255, 255);
+        label_set(ren, font, &l_ver, "BBhM v0.0.2 (passo 1b)", 20, 20, 20);
+        snprintf(buf, sizeof buf, "Renderer: %s  %dx%d", info.name, w, h);
+        label_set(ren, font, &l_rend, buf, 20, 20, 20);
+        snprintf(buf, sizeof buf, "FPS: %u", (unsigned)fps);
+        label_set(ren, font, &l_fps, buf, 20, 20, 20);
+        snprintf(buf, sizeof buf, "Controle: %s", pad_ok ? "conectado" : "nao detectado");
+        label_set(ren, font, &l_pad, buf, 20, 20, 20);
+        snprintf(buf, sizeof buf, "Ultimo input: %s", last);
+        label_set(ren, font, &l_last, buf, 20, 20, 20);
+        snprintf(buf, sizeof buf, "Segurando: %s", held[0] ? held : "-");
+        label_set(ren, font, &l_held, buf, 20, 20, 20);
+        label_set(ren, font, &l_hint, "Sair: Start + Select", 90, 90, 90);
+
         /* desktop */
         fill(ren, 0, 0, w, h, 58, 110, 165);
-        /* painel superior e inferior */
         fill(ren, 0, 0, w, 32, 232, 232, 228);
         fill(ren, 0, 32, w, 1, 160, 160, 156);
         fill(ren, 0, h - 32, w, 32, 232, 232, 228);
         fill(ren, 0, h - 33, w, 1, 160, 160, 156);
-        text(ren, font, "Applications   Places   System", 12, 3, 20, 20, 20);
-        text(ren, font, "BBhM", 12, h - 29, 20, 20, 20);
+        label_draw(ren, &l_menu, 12, 3);
+        label_draw(ren, &l_task, 12, h - 29);
 
         /* janela de teste */
-        fill(ren, w / 2 - 320, 110, 640, 340, 90, 90, 90);
+        fill(ren, w / 2 - 320, 110, 640, 380, 90, 90, 90);
         fill(ren, w / 2 - 318, 112, 636, 30, 74, 111, 165);
-        fill(ren, w / 2 - 318, 142, 636, 306, 242, 241, 240);
-        text(ren, font, "BBhM - teste do esqueleto", w / 2 - 308, 114, 255, 255, 255);
-
-        snprintf(buf, sizeof buf, "BBhM v0.0.1 (passo 1)");
-        text(ren, font, buf, w / 2 - 300, 160, 20, 20, 20);
-        snprintf(buf, sizeof buf, "Renderer: %s  %dx%d", info.name, w, h);
-        text(ren, font, buf, w / 2 - 300, 195, 20, 20, 20);
-        snprintf(buf, sizeof buf, "FPS: %u", (unsigned)fps);
-        text(ren, font, buf, w / 2 - 300, 230, 20, 20, 20);
-        snprintf(buf, sizeof buf, "Joystick: %s", jsname);
-        text(ren, font, buf, w / 2 - 300, 265, 20, 20, 20);
-        snprintf(buf, sizeof buf, "Ultimo input: %s", last);
-        text(ren, font, buf, w / 2 - 300, 300, 20, 20, 20);
-        text(ren, font, "Sair: botao PS > Sair do jogo", w / 2 - 300, 400, 90, 90, 90);
+        fill(ren, w / 2 - 318, 142, 636, 346, 242, 241, 240);
+        label_draw(ren, &l_title, w / 2 - 308, 114);
+        label_draw(ren, &l_ver,  w / 2 - 300, 160);
+        label_draw(ren, &l_rend, w / 2 - 300, 195);
+        label_draw(ren, &l_fps,  w / 2 - 300, 230);
+        label_draw(ren, &l_pad,  w / 2 - 300, 265);
+        label_draw(ren, &l_last, w / 2 - 300, 300);
+        label_draw(ren, &l_held, w / 2 - 300, 335);
+        label_draw(ren, &l_hint, w / 2 - 300, 440);
 
         draw_cursor(ren, cx, cy);
         SDL_RenderPresent(ren);
@@ -182,7 +250,7 @@ int main(int argc, char *argv[])
         frames++;
         if (SDL_GetTicks() - t0 >= 1000) {
             fps = frames; frames = 0; t0 = SDL_GetTicks();
-            bb_log("fps=%u", (unsigned)fps);
+            bb_log("fps=%u pad=%d cursor=%d,%d", (unsigned)fps, pad_ok, cx, cy);
         }
         SDL_Delay(5);
     }
