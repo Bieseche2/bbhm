@@ -38,3 +38,6 @@ clean:
 	rm -rf build
 
 .PHONY: all clean
+
+SFOXML := $(PS3DEV)/bin/sfo.xml
+pkg: $(TARGET).pkg
